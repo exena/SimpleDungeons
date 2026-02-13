@@ -58,6 +58,8 @@ var names = {
 func _ready():
 	for name in names.values():
 		%OptionButtonDungeons.add_item(name)
+	%DungeonGenerator3D.done_generating.connect(_on_dungeon_done_generating)
+	%DownloadDungeonJsonButton.disabled = true
 	%Seed.value = randi()
 	regenerate()
 
@@ -107,6 +109,7 @@ func regenerate():
 		print("Aborting...")
 		%DungeonGenerator3D.abort_generation()
 		print("Aborted successfully")
+	%DownloadDungeonJsonButton.disabled = true
 	
 	cleanup_mansion()
 	var n = %OptionButtonDungeons.get_item_text(%OptionButtonDungeons.get_selected_id())
@@ -132,6 +135,68 @@ func regenerate():
 	
 	_update_props()
 	%DungeonGenerator3D.generate(%Seed.value)
+
+func _on_dungeon_done_generating():
+	%DownloadDungeonJsonButton.disabled = false
+
+func _on_download_dungeon_json_button_pressed():
+	if %DungeonGenerator3D.is_currently_generating:
+		print("Dungeon is still generating. Try again in a moment.")
+		return
+	var json_payload := _build_dungeon_layout_json_payload()
+	var json_text := JSON.stringify(json_payload, "\t")
+	var file_name := "dungeon_layout_%s.json" % Time.get_unix_time_from_system()
+	if OS.has_feature("web"):
+		if not Engine.has_singleton("JavaScriptBridge"):
+			push_error("JavaScriptBridge singleton not available on this web export template.")
+			return
+		var js = JavaScriptBridge
+		var encoded_data = Marshalls.raw_to_base64(json_text.to_utf8_buffer())
+		js.eval("""
+			(function(){
+				const bytes = Uint8Array.from(atob('%s'), c => c.charCodeAt(0));
+				const blob = new Blob([bytes], { type: 'application/json' });
+				const url = URL.createObjectURL(blob);
+				const a = document.createElement('a');
+				a.href = url;
+				a.download = '%s';
+				document.body.appendChild(a);
+				a.click();
+				a.remove();
+				URL.revokeObjectURL(url);
+			})();
+		""" % [encoded_data, file_name])
+		print("Downloaded dungeon JSON to browser.")
+		return
+	var save_path := "user://%s" % file_name
+	var file := FileAccess.open(save_path, FileAccess.WRITE)
+	if file == null:
+		push_error("Failed to write JSON file to %s" % save_path)
+		return
+	file.store_string(json_text)
+	print("Saved dungeon JSON to ", ProjectSettings.globalize_path(save_path))
+
+func _build_dungeon_layout_json_payload() -> Dictionary:
+	var rooms : Array = []
+	var rooms_container := %DungeonGenerator3D.get_node_or_null("RoomsContainer")
+	if rooms_container:
+		for room in rooms_container.get_children():
+			if room is DungeonRoom3D:
+				rooms.push_back({
+					"name": room.name,
+					"scene_path": room.scene_file_path,
+					"grid_pos": [room.get_grid_pos().x, room.get_grid_pos().y, room.get_grid_pos().z],
+					"room_rotations": room.room_rotations,
+					"size_in_voxels": [room.size_in_voxels.x, room.size_in_voxels.y, room.size_in_voxels.z],
+					"global_position": [room.global_position.x, room.global_position.y, room.global_position.z]
+				})
+	return {
+		"seed": int(%Seed.value),
+		"dungeon_size": [%DungeonGenerator3D.dungeon_size.x, %DungeonGenerator3D.dungeon_size.y, %DungeonGenerator3D.dungeon_size.z],
+		"voxel_scale": [%DungeonGenerator3D.voxel_scale.x, %DungeonGenerator3D.voxel_scale.y, %DungeonGenerator3D.voxel_scale.z],
+		"room_count": rooms.size(),
+		"rooms": rooms
+	}
 
 
 func _on_generate_with_new_seed_button_pressed():
